@@ -2,14 +2,18 @@
 
 #include <cstddef>
 
-byte_track::STrack::STrack(const Rect<float>& rect, const float& score) :
-    kalman_filter_(),
+byte_track::STrack::STrack(const Rect<float>& rect, const float& score,
+                           const int& label,
+                           const float& kalman_pos_weight,
+                           const float& kalman_vel_weight) :
+    kalman_filter_(kalman_pos_weight, kalman_vel_weight),
     mean_(),
     covariance_(),
     rect_(rect),
     state_(STrackState::New),
     is_activated_(false),
     score_(score),
+    label_(label),
     track_id_(0),
     frame_id_(0),
     start_frame_id_(0),
@@ -38,6 +42,11 @@ const bool& byte_track::STrack::isActivated() const
 const float& byte_track::STrack::getScore() const
 {
     return score_;
+}
+
+const int& byte_track::STrack::getLabel() const
+{
+    return label_;
 }
 
 const size_t& byte_track::STrack::getTrackId() const
@@ -86,6 +95,7 @@ void byte_track::STrack::reActivate(const STrack &new_track, const size_t &frame
     state_ = STrackState::Tracked;
     is_activated_ = true;
     score_ = new_track.getScore();
+    label_ = new_track.getLabel();
     if (0 <= new_track_id)
     {
         track_id_ = new_track_id;
@@ -112,6 +122,7 @@ void byte_track::STrack::update(const STrack &new_track, const size_t &frame_id)
     state_ = STrackState::Tracked;
     is_activated_ = true;
     score_ = new_track.getScore();
+    label_ = new_track.getLabel();
     frame_id_ = frame_id;
     tracklet_len_++;
 }
