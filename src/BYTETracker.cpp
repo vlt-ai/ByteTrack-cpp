@@ -1,5 +1,6 @@
 #include "ByteTrack/BYTETracker.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <limits>
 #include <map>
@@ -8,17 +9,33 @@
 #include <utility>
 #include <vector>
 
+byte_track::BYTETracker::BYTETracker(const Params& params) :
+    params_(params),
+    max_time_lost_(static_cast<size_t>(params.frame_rate / 30.0 * params.track_buffer)),
+    frame_id_(0),
+    track_id_count_(0)
+{
+}
+
 byte_track::BYTETracker::BYTETracker(const int& frame_rate,
                                      const int& track_buffer,
                                      const float& track_thresh,
                                      const float& high_thresh,
                                      const float& match_thresh) :
-    track_thresh_(track_thresh),
-    high_thresh_(high_thresh),
-    match_thresh_(match_thresh),
-    max_time_lost_(static_cast<size_t>(frame_rate / 30.0 * track_buffer)),
-    frame_id_(0),
-    track_id_count_(0)
+    BYTETracker(Params{
+        /*frame_rate*/                frame_rate,
+        /*track_buffer*/              track_buffer,
+        /*track_thresh*/              track_thresh,
+        /*high_thresh*/               high_thresh,
+        /*match_thresh*/              match_thresh,
+        /*match_thresh_second*/       0.5f,
+        /*match_thresh_unconfirmed*/  0.7f,
+        /*kalman_pos_weight*/         1.0f / 20.0f,
+        /*kalman_vel_weight*/         1.0f / 160.0f,
+        /*class_aware_match*/         false,
+        /*track_thresh_per_class*/    {},
+        /*high_thresh_per_class*/     {},
+    })
 {
 }
 
@@ -26,19 +43,58 @@ byte_track::BYTETracker::~BYTETracker()
 {
 }
 
+float byte_track::BYTETracker::trackThreshFor(int label) const
+{
+    auto it = params_.track_thresh_per_class.find(label);
+    return it != params_.track_thresh_per_class.end() ? it->second
+                                                      : params_.track_thresh;
+}
+
+float byte_track::BYTETracker::highThreshFor(int label) const
+{
+    auto it = params_.high_thresh_per_class.find(label);
+    return it != params_.high_thresh_per_class.end() ? it->second
+                                                     : params_.high_thresh;
+}
+
+void byte_track::BYTETracker::gateCrossClass(std::vector<std::vector<float>>& dists,
+                                             const std::vector<STrackPtr>& a_tracks,
+                                             const std::vector<STrackPtr>& b_tracks) const
+{
+    if (!params_.class_aware_match) return;
+    constexpr float kBlock = std::numeric_limits<float>::max();
+    for (size_t i = 0; i < dists.size() && i < a_tracks.size(); ++i)
+    {
+        const int la = a_tracks[i]->getLabel();
+        for (size_t j = 0; j < dists[i].size() && j < b_tracks.size(); ++j)
+        {
+            if (la != b_tracks[j]->getLabel())
+            {
+                dists[i][j] = kBlock;
+            }
+        }
+    }
+}
+
 std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(const std::vector<Object>& objects)
 {
     ////////////////// Step 1: Get detections //////////////////
     frame_id_++;
 
-    // Create new STracks using the result of object detection
+    // Create new STracks using the result of object detection. The
+    // high/low pool split now uses a per-class threshold when one is
+    // configured for `object.label`; otherwise the global track_thresh
+    // applies. STrack carries the label so downstream class-aware
+    // matching and the camera_entry warm-start path can read it directly.
     std::vector<STrackPtr> det_stracks;
     std::vector<STrackPtr> det_low_stracks;
 
     for (const auto &object : objects)
     {
-        const auto strack = std::make_shared<STrack>(object.rect, object.prob);
-        if (object.prob >= track_thresh_)
+        const auto strack = std::make_shared<STrack>(
+            object.rect, object.prob, object.label,
+            params_.kalman_pos_weight, params_.kalman_vel_weight);
+        if (object.prob >= trackThreshFor(object.label))
         {
             det_stracks.push_back(strack);
         }
@@ -83,8 +139,10 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
         std::vector<std::vector<int>> matches_idx;
         std::vector<int> unmatch_detection_idx, unmatch_track_idx;
 
-        const auto dists = calcIouDistance(strack_pool, det_stracks);
-        linearAssignment(dists, strack_pool.size(), det_stracks.size(), match_thresh_,
+        auto dists = calcIouDistance(strack_pool, det_stracks);
+        gateCrossClass(dists, strack_pool, det_stracks);
+        linearAssignment(dists, strack_pool.size(), det_stracks.size(),
+                         params_.match_thresh,
                          matches_idx, unmatch_track_idx, unmatch_detection_idx);
 
         for (const auto &match_idx : matches_idx)
@@ -124,8 +182,10 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
         std::vector<std::vector<int>> matches_idx;
         std::vector<int> unmatch_track_idx, unmatch_detection_idx;
 
-        const auto dists = calcIouDistance(remain_tracked_stracks, det_low_stracks);
-        linearAssignment(dists, remain_tracked_stracks.size(), det_low_stracks.size(), 0.5,
+        auto dists = calcIouDistance(remain_tracked_stracks, det_low_stracks);
+        gateCrossClass(dists, remain_tracked_stracks, det_low_stracks);
+        linearAssignment(dists, remain_tracked_stracks.size(), det_low_stracks.size(),
+                         params_.match_thresh_second,
                          matches_idx, unmatch_track_idx, unmatch_detection_idx);
 
         for (const auto &match_idx : matches_idx)
@@ -164,8 +224,10 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
         std::vector<std::vector<int>> matches_idx;
 
         // Deal with unconfirmed tracks, usually tracks with only one beginning frame
-        const auto dists = calcIouDistance(non_active_stracks, remain_det_stracks);
-        linearAssignment(dists, non_active_stracks.size(), remain_det_stracks.size(), 0.7,
+        auto dists = calcIouDistance(non_active_stracks, remain_det_stracks);
+        gateCrossClass(dists, non_active_stracks, remain_det_stracks);
+        linearAssignment(dists, non_active_stracks.size(), remain_det_stracks.size(),
+                         params_.match_thresh_unconfirmed,
                          matches_idx, unmatch_unconfirmed_idx, unmatch_detection_idx);
 
         for (const auto &match_idx : matches_idx)
@@ -181,11 +243,13 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
             current_removed_stracks.push_back(track);
         }
 
-        // Add new stracks
+        // Add new stracks. New-track confirmation gate is per-class so
+        // low-confidence classes (e.g. backpack) can still mint a fresh
+        // ID without needing to clear the global high_thresh.
         for (const auto &unmatch_idx : unmatch_detection_idx)
         {
             const auto track = remain_det_stracks[unmatch_idx];
-            if (track->getScore() < high_thresh_)
+            if (track->getScore() < highThreshFor(track->getLabel()))
             {
                 continue;
             }
@@ -213,6 +277,21 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
     removeDuplicateStracks(tracked_stracks_, lost_stracks_, tracked_stracks_out, lost_stracks_out);
     tracked_stracks_ = tracked_stracks_out;
     lost_stracks_ = lost_stracks_out;
+
+    // Memory panic-stop: cap tracked/lost buffers, dropping the
+    // least-recently-updated entries (smallest `frame_id_` first).
+    // `params_.max_tracked == 0` / `params_.max_lost == 0` disables.
+    auto cap_by_frame_id = [](std::vector<STrackPtr>& v, size_t cap) {
+        if (cap == 0 || v.size() <= cap) return;
+        std::sort(v.begin(), v.end(),
+                  [](const STrackPtr& a, const STrackPtr& b) {
+                      return a->getFrameId() < b->getFrameId();
+                  });
+        v.erase(v.begin(),
+                v.begin() + static_cast<std::ptrdiff_t>(v.size() - cap));
+    };
+    cap_by_frame_id(tracked_stracks_, params_.max_tracked);
+    cap_by_frame_id(lost_stracks_, params_.max_lost);
 
     std::vector<STrackPtr> output_stracks;
     for (const auto &track : tracked_stracks_)
@@ -280,7 +359,10 @@ void byte_track::BYTETracker::removeDuplicateStracks(const std::vector<STrackPtr
                                                      std::vector<STrackPtr> &a_res,
                                                      std::vector<STrackPtr> &b_res) const
 {
-    const auto ious = calcIouDistance(a_stracks, b_stracks);
+    auto ious = calcIouDistance(a_stracks, b_stracks);
+    // Duplicate suppression is also class-respecting: two tracks of
+    // different classes with overlapping bboxes are NOT duplicates.
+    gateCrossClass(ious, a_stracks, b_stracks);
 
     std::vector<std::pair<size_t, size_t>> overlapping_combinations;
     for (size_t i = 0; i < ious.size(); i++)
