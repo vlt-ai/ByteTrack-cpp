@@ -64,6 +64,7 @@ public:
     /// to expose the underlying vectors.
     size_t getTrackedCount() const { return tracked_stracks_.size(); }
     size_t getLostCount()    const { return lost_stracks_.size(); }
+    size_t getRemovedCount() const { return removed_stracks_.size(); }
 
 private:
     std::vector<STrackPtr> jointStracks(const std::vector<STrackPtr> &a_tlist,

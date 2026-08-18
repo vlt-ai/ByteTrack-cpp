@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -292,6 +293,27 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
     };
     cap_by_frame_id(tracked_stracks_, params_.max_tracked);
     cap_by_frame_id(lost_stracks_, params_.max_lost);
+
+    // `removed_stracks_` exists only so that the Step-5 subtraction can keep a
+    // track that has already been removed from re-entering `lost_stracks_`. A
+    // track can only re-enter through `strack_pool` (tracked + lost), and track
+    // ids are never reused, so an entry whose id is in neither pool is
+    // unreachable and can never be subtracted against again. Dropping those
+    // entries is behaviour-preserving and is what bounds the vector: without it
+    // it grows once per removed track for the lifetime of the tracker, and both
+    // the per-frame subtraction and the memory footprint grow with it.
+    {
+        std::unordered_set<int> reachable;
+        reachable.reserve(tracked_stracks_.size() + lost_stracks_.size());
+        for (const auto &track : tracked_stracks_) reachable.insert(track->getTrackId());
+        for (const auto &track : lost_stracks_)    reachable.insert(track->getTrackId());
+        removed_stracks_.erase(
+            std::remove_if(removed_stracks_.begin(), removed_stracks_.end(),
+                           [&reachable](const STrackPtr &track) {
+                               return reachable.count(track->getTrackId()) == 0;
+                           }),
+            removed_stracks_.end());
+    }
 
     std::vector<STrackPtr> output_stracks;
     for (const auto &track : tracked_stracks_)
