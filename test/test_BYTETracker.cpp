@@ -7,7 +7,10 @@
 #include "boost/foreach.hpp"
 #include "boost/optional.hpp"
 
+#include <algorithm>
 #include <cstddef>
+#include <random>
+#include <utility>
 
 namespace
 {
@@ -143,6 +146,54 @@ TEST(ByteTrack, BYTETracker)
     {
         FAIL() << e.what();
     }
+}
+
+// The removed-track bookkeeping must not grow with the number of frames
+// processed. It is only consulted to stop an already-removed track from
+// re-entering the lost pool, which can only happen while the track is still
+// reachable through tracked + lost; retaining unreachable entries makes both
+// update() cost and memory grow without bound for the tracker's lifetime.
+TEST(BYTETracker, RemovedTrackBookkeepingStaysBounded)
+{
+    constexpr int   FRAMES     = 4000;
+    constexpr int   OBJECTS    = 12;
+    constexpr float CHURN_PROB = 0.25f;
+
+    byte_track::BYTETracker::Params params;
+    params.frame_rate  = 30;
+    params.track_buffer = 30;
+    params.max_tracked = 512;
+    params.max_lost    = 512;
+    byte_track::BYTETracker tracker(params);
+
+    std::mt19937 rng(42);
+    std::uniform_real_distribution<float> pos(0.f, 1000.f);
+    std::uniform_real_distribution<float> unit(0.f, 1.f);
+
+    std::vector<std::pair<float, float>> actors(OBJECTS);
+    for (auto &a : actors) a = {pos(rng), pos(rng)};
+
+    size_t max_removed = 0;
+    for (int f = 0; f < FRAMES; ++f)
+    {
+        std::vector<byte_track::Object> objects;
+        objects.reserve(actors.size());
+        for (auto &a : actors)
+        {
+            // Teleport a share of the actors every frame so tracks are
+            // continuously born, lost and removed.
+            if (unit(rng) < CHURN_PROB) a = {pos(rng), pos(rng)};
+            else                        a = {a.first + 3.f, a.second + 1.f};
+            objects.emplace_back(byte_track::Rect<float>(a.first, a.second, 40.f, 90.f),
+                                 0, 0.9f);
+        }
+        tracker.update(objects);
+        max_removed = std::max(max_removed, tracker.getRemovedCount());
+    }
+
+    // Bounded by what tracked + lost can hold, independent of FRAMES.
+    EXPECT_LE(max_removed, params.max_tracked + params.max_lost);
+    EXPECT_LE(tracker.getRemovedCount(), params.max_tracked + params.max_lost);
 }
 
 int main(int argc, char **argv)
