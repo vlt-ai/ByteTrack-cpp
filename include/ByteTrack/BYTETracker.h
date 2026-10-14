@@ -47,6 +47,11 @@ public:
     /// New API: pass the full Params struct.
     explicit BYTETracker(const Params& params);
 
+    /// Frames a lost track is kept before removal; follows the stream's frame
+    /// rate when that changes.
+    void setMaxTimeLost(size_t frames) { max_time_lost_ = frames; }
+    size_t maxTimeLost() const { return max_time_lost_; }
+
     /// Legacy 5-arg constructor — preserved so the upstream unit tests in
     /// third_party/.../test/test_BYTETracker.cpp keep compiling unchanged.
     BYTETracker(const int& frame_rate,
@@ -116,7 +121,7 @@ private:
 
 private:
     const Params  params_;
-    const size_t  max_time_lost_;
+    size_t        max_time_lost_;
 
     size_t frame_id_;
     size_t track_id_count_;
