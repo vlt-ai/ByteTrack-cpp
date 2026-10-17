@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -532,6 +533,41 @@ std::vector<std::vector<float> > byte_track::BYTETracker::calcIouDistance(const 
     return cost_matrix;
 }
 
+namespace
+{
+// Assigns the cheapest remaining (row, col) pair below cost_limit until none is left.
+// Used when lapjv cannot solve the matrix, so a frame keeps its plausible matches
+// instead of failing the whole update. NaN costs never compare below the limit.
+void greedyAssignment(const std::vector<std::vector<float>> &cost,
+                      float cost_limit,
+                      std::vector<int> &rowsol,
+                      std::vector<int> &colsol)
+{
+    std::fill(rowsol.begin(), rowsol.end(), -1);
+    std::fill(colsol.begin(), colsol.end(), -1);
+    std::vector<std::tuple<float, int, int>> pairs;
+    for (size_t i = 0; i < cost.size(); i++)
+    {
+        for (size_t j = 0; j < cost[i].size(); j++)
+        {
+            if (cost[i][j] < cost_limit)
+            {
+                pairs.emplace_back(cost[i][j], static_cast<int>(i), static_cast<int>(j));
+            }
+        }
+    }
+    std::sort(pairs.begin(), pairs.end());
+    for (const auto &[c, i, j] : pairs)
+    {
+        if (rowsol[i] < 0 && colsol[j] < 0)
+        {
+            rowsol[i] = j;
+            colsol[j] = i;
+        }
+    }
+}
+}
+
 double byte_track::BYTETracker::execLapjv(const std::vector<std::vector<float>> &cost,
                                           std::vector<int> &rowsol,
                                           std::vector<int> &colsol,
@@ -635,14 +671,14 @@ double byte_track::BYTETracker::execLapjv(const std::vector<std::vector<float>> 
     int *y_c = new int[sizeof(int) * n];
 
     int ret = lapjv_internal(n, cost_ptr, x_c, y_c);
-    if (ret != 0)
-    {
-        throw std::runtime_error("The result of lapjv_internal() is invalid.");
-    }
 
     double opt = 0.0;
 
-    if (n != n_rows)
+    if (ret != 0)
+    {
+        greedyAssignment(cost, cost_limit, rowsol, colsol);
+    }
+    else if (n != n_rows)
     {
         for (int i = 0; i < n; i++)
         {
