@@ -14,6 +14,14 @@ enum class STrackState {
     Removed = 3,
 };
 
+/// Rate of change of the box, in pixels per second.
+struct Velocity
+{
+    float x = 0.f;       // box centre
+    float y = 0.f;       // box centre
+    float height = 0.f;
+};
+
 class STrack
 {
 public:
@@ -23,7 +31,8 @@ public:
     STrack(const Rect<float>& rect, const float& score,
            const int& label = 0,
            const float& kalman_pos_weight = 1.f / 20.f,
-           const float& kalman_vel_weight = 1.f / 160.f);
+           const float& kalman_vel_weight = 1.f / 160.f,
+           const double& frame_period_ms = 1000.0 / 30.0);
     ~STrack();
 
     const Rect<float>& getRect() const;
@@ -37,11 +46,20 @@ public:
     const size_t& getStartFrameId() const;
     const size_t& getTrackletLength() const;
 
-    void activate(const size_t& frame_id, const size_t& track_id);
-    void reActivate(const STrack &new_track, const size_t &frame_id, const int &new_track_id = -1);
+    /// Kalman velocity of the box. Zero until the track has been predicted and updated at least once.
+    Velocity getVelocity() const;
 
-    void predict();
-    void update(const STrack &new_track, const size_t &frame_id);
+    /// now_ms is the time of the frame the call belongs to. Kalman steps are measured from it in units of the
+    /// nominal frame period, so tracks follow real time when frames arrive at irregular intervals.
+    void activate(const size_t& frame_id, const size_t& track_id, double now_ms);
+    void reActivate(const STrack &new_track, const size_t &frame_id, double now_ms, const int &new_track_id = -1);
+
+    void predict(double now_ms);
+
+    /// Sets getRect() to the Kalman state, so IoU association compares detections with the predicted box rather
+    /// than the last measured one.
+    void usePredictedRect();
+    void update(const STrack &new_track, const size_t &frame_id, double now_ms);
 
     void markAsLost();
     void markAsRemoved();
@@ -61,6 +79,8 @@ private:
     size_t frame_id_;
     size_t start_frame_id_;
     size_t tracklet_len_;
+    double frame_period_ms_;
+    double state_ms_;        // time the Kalman state refers to
 
     void updateRect();
 };

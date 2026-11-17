@@ -58,6 +58,7 @@ if(BUILD_BYTETRACK_TEST)
 
   add_executable(${PROJECT_NAME}_test
     ${CMAKE_CURRENT_SOURCE_DIR}/test/test_BYTETracker.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/test/test_time_based.cpp
   )
 
   target_link_libraries(${PROJECT_NAME}_test
