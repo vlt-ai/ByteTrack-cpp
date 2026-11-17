@@ -1,11 +1,13 @@
 #include "ByteTrack/STrack.h"
 
+#include <algorithm>
 #include <cstddef>
 
 byte_track::STrack::STrack(const Rect<float>& rect, const float& score,
                            const int& label,
                            const float& kalman_pos_weight,
-                           const float& kalman_vel_weight) :
+                           const float& kalman_vel_weight,
+                           const double& frame_period_ms) :
     kalman_filter_(kalman_pos_weight, kalman_vel_weight),
     mean_(),
     covariance_(),
@@ -17,7 +19,9 @@ byte_track::STrack::STrack(const Rect<float>& rect, const float& score,
     track_id_(0),
     frame_id_(0),
     start_frame_id_(0),
-    tracklet_len_(0)
+    tracklet_len_(0),
+    frame_period_ms_(frame_period_ms),
+    state_ms_(0.0)
 {
 }
 
@@ -69,8 +73,15 @@ const size_t& byte_track::STrack::getTrackletLength() const
     return tracklet_len_;
 }
 
-void byte_track::STrack::activate(const size_t& frame_id, const size_t& track_id)
+byte_track::Velocity byte_track::STrack::getVelocity() const
 {
+    const float per_s = static_cast<float>(1000.0 / frame_period_ms_);
+    return Velocity{mean_[4] * per_s, mean_[5] * per_s, mean_[7] * per_s};
+}
+
+void byte_track::STrack::activate(const size_t& frame_id, const size_t& track_id, double now_ms)
+{
+    state_ms_ = now_ms;
     kalman_filter_.initiate(mean_, covariance_, rect_.getXyah());
 
     updateRect();
@@ -86,8 +97,11 @@ void byte_track::STrack::activate(const size_t& frame_id, const size_t& track_id
     tracklet_len_ = 0;
 }
 
-void byte_track::STrack::reActivate(const STrack &new_track, const size_t &frame_id, const int &new_track_id)
+void byte_track::STrack::reActivate(const STrack &new_track, const size_t &frame_id, double now_ms,
+                                    const int &new_track_id)
 {
+    // A measurement update makes the state current at now_ms even when the track was not predicted first.
+    state_ms_ = std::max(state_ms_, now_ms);
     kalman_filter_.update(mean_, covariance_, new_track.getRect().getXyah());
 
     updateRect();
@@ -104,17 +118,27 @@ void byte_track::STrack::reActivate(const STrack &new_track, const size_t &frame
     tracklet_len_ = 0;
 }
 
-void byte_track::STrack::predict()
+void byte_track::STrack::predict(double now_ms)
 {
     if (state_ != STrackState::Tracked)
     {
         mean_[7] = 0;
     }
-    kalman_filter_.predict(mean_, covariance_);
+    if (now_ms > state_ms_)
+    {
+        kalman_filter_.predict(mean_, covariance_, static_cast<float>((now_ms - state_ms_) / frame_period_ms_));
+        state_ms_ = now_ms;
+    }
 }
 
-void byte_track::STrack::update(const STrack &new_track, const size_t &frame_id)
+void byte_track::STrack::usePredictedRect()
 {
+    updateRect();
+}
+
+void byte_track::STrack::update(const STrack &new_track, const size_t &frame_id, double now_ms)
+{
+    state_ms_ = std::max(state_ms_, now_ms);
     kalman_filter_.update(mean_, covariance_, new_track.getRect().getXyah());
 
     updateRect();

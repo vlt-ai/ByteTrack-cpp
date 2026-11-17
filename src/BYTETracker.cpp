@@ -13,7 +13,9 @@
 
 byte_track::BYTETracker::BYTETracker(const Params& params) :
     params_(params),
+    frame_period_ms_(1000.0 / (params.frame_rate > 0 ? params.frame_rate : 30)),
     max_time_lost_(static_cast<size_t>(params.frame_rate / 30.0 * params.track_buffer)),
+    now_ms_(0.0),
     frame_id_(0),
     track_id_count_(0)
 {
@@ -80,8 +82,22 @@ void byte_track::BYTETracker::gateCrossClass(std::vector<std::vector<float>>& di
 
 std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(const std::vector<Object>& objects)
 {
+    return updateAt(objects, now_ms_ + frame_period_ms_);
+}
+
+std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(const std::vector<Object>& objects,
+                                                                              int64_t ts_ms)
+{
+    return updateAt(objects, static_cast<double>(ts_ms));
+}
+
+std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::updateAt(const std::vector<Object>& objects,
+                                                                                double now_ms)
+{
     ////////////////// Step 1: Get detections //////////////////
     frame_id_++;
+    now_ms_ = now_ms;
+
 
     // Create new STracks using the result of object detection. The
     // high/low pool split now uses a per-class threshold when one is
@@ -95,7 +111,7 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
     {
         const auto strack = std::make_shared<STrack>(
             object.rect, object.prob, object.label,
-            params_.kalman_pos_weight, params_.kalman_vel_weight);
+            params_.kalman_pos_weight, params_.kalman_vel_weight, frame_period_ms_);
         if (object.prob >= trackThreshFor(object.label))
         {
             det_stracks.push_back(strack);
@@ -128,7 +144,11 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
     // Predict current pose by KF
     for (auto &strack : strack_pool)
     {
-        strack->predict();
+        strack->predict(now_ms);
+        if (params_.match_on_prediction)
+        {
+            strack->usePredictedRect();
+        }
     }
 
     ////////////////// Step 2: First association, with IoU //////////////////
@@ -153,12 +173,12 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
             const auto det = det_stracks[match_idx[1]];
             if (track->getSTrackState() == STrackState::Tracked)
             {
-                track->update(*det, frame_id_);
+                track->update(*det, frame_id_, now_ms);
                 current_tracked_stracks.push_back(track);
             }
             else
             {
-                track->reActivate(*det, frame_id_);
+                track->reActivate(*det, frame_id_, now_ms);
                 refind_stracks.push_back(track);
             }
         }
@@ -196,12 +216,12 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
             const auto det = det_low_stracks[match_idx[1]];
             if (track->getSTrackState() == STrackState::Tracked)
             {
-                track->update(*det, frame_id_);
+                track->update(*det, frame_id_, now_ms);
                 current_tracked_stracks.push_back(track);
             }
             else
             {
-                track->reActivate(*det, frame_id_);
+                track->reActivate(*det, frame_id_, now_ms);
                 refind_stracks.push_back(track);
             }
         }
@@ -234,7 +254,7 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
 
         for (const auto &match_idx : matches_idx)
         {
-            non_active_stracks[match_idx[0]]->update(*remain_det_stracks[match_idx[1]], frame_id_);
+            non_active_stracks[match_idx[0]]->update(*remain_det_stracks[match_idx[1]], frame_id_, now_ms);
             current_tracked_stracks.push_back(non_active_stracks[match_idx[0]]);
         }
 
@@ -256,7 +276,7 @@ std::vector<byte_track::BYTETracker::STrackPtr> byte_track::BYTETracker::update(
                 continue;
             }
             track_id_count_++;
-            track->activate(frame_id_, track_id_count_);
+            track->activate(frame_id_, track_id_count_, now_ms);
             current_tracked_stracks.push_back(track);
         }
     }

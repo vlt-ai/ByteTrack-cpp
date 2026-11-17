@@ -5,6 +5,7 @@
 #include "ByteTrack/Object.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <memory>
@@ -42,6 +43,9 @@ public:
         // be set well above any expected scene density.
         size_t max_tracked              = 0;
         size_t max_lost                 = 0;
+        // Associate detections with each track's Kalman-predicted box instead of its last measured box. Off
+        // reproduces the reference ByteTrack ncnn C++ output, which ignores the motion model when matching.
+        bool  match_on_prediction       = false;
     };
 
     /// New API: pass the full Params struct.
@@ -62,6 +66,12 @@ public:
 
     ~BYTETracker();
 
+    /// Tracks one frame captured at ts_ms. Kalman prediction covers the real time since each track's state, in
+    /// units of the nominal frame period (1000 / frame_rate ms), so motion and velocity follow real time when
+    /// frames arrive at irregular intervals. Lost tracks still expire after maxTimeLost() frames.
+    std::vector<STrackPtr> update(const std::vector<Object>& objects, int64_t ts_ms);
+
+    /// Tracks one frame assumed to follow the previous one by exactly one nominal frame period.
     std::vector<STrackPtr> update(const std::vector<Object>& objects);
 
     /// Current occupancy of the tracked / lost track buffers. Used by
@@ -119,9 +129,13 @@ private:
     /// `params_.high_thresh`.
     float highThreshFor(int label) const;
 
+    std::vector<STrackPtr> updateAt(const std::vector<Object>& objects, double now_ms);
+
 private:
     const Params  params_;
+    double        frame_period_ms_;
     size_t        max_time_lost_;
+    double        now_ms_;
 
     size_t frame_id_;
     size_t track_id_count_;

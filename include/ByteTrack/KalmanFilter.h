@@ -24,13 +24,16 @@ public:
 
     void predict(StateMean& mean, StateCov& covariance);
 
+    /// Advances the state by dt nominal frame periods: positions move by velocity * dt and the motion noise
+    /// variance scales with dt, so one step of 2 moves as far as two steps of 1. dt <= 0 leaves the state alone.
+    void predict(StateMean& mean, StateCov& covariance, float dt);
+
     void update(StateMean& mean, StateCov& covariance, const DetectBox& measurement);
 
 private:
     float std_weight_position_;
     float std_weight_velocity_;
 
-    Eigen::Matrix<float, 8, 8, Eigen::RowMajor> motion_mat_;
     Eigen::Matrix<float, 4, 8, Eigen::RowMajor> update_mat_;
 
     void project(StateHMean &projected_mean, StateHCov &projected_covariance,
